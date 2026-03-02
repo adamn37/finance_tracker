@@ -46,6 +46,7 @@ export default function Dashboard() {
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]); 
   const [priority, setPriority] = useState<"need" | "want" | "save">("want");
   const [selectedBankId, setSelectedBankId] = useState(""); 
+  const greeting = new Date().getHours() < 12 ? "Good morning" : new Date().getHours() < 18 ? "Good afternoon" : "Good evening";
   
   const [editingTxId, setEditingTxId] = useState<string | null>(null);
   const [editFields, setEditFields] = useState<{
@@ -425,8 +426,8 @@ export default function Dashboard() {
     <main className="min-h-screen bg-gray-50 p-4 md:p-8 font-sans text-gray-800">
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">WealthBase</h1>
-          <p className="text-gray-500">Track spending & bank bonuses</p>
+          <h1 className="text-3xl font-bold text-gray-900">{greeting} 👋</h1>
+          <p className="text-gray-500">Welcome to your WealthBase dashboard</p>
         </div>
         <div className="flex flex-wrap gap-2 bg-white p-1 rounded-lg border border-gray-200">
            <NavButton id="daily" label="Daily" />

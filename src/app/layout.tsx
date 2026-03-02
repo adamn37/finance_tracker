@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "FinanceHub | Personal Wealth Tracker",
+  title: "WealthBase | Personal Wealth Tracker",
   description: "Track your spending, bank switches, and investment portfolio in real-time.",
 };
 
