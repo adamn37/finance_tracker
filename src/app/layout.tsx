@@ -1,20 +1,16 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Poppins } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// 1. Import Poppins and set the font weights we want to use
+const poppins = Poppins({
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800", "900"],
 });
 
 export const metadata: Metadata = {
-  title: "WealthBase | Personal Wealth Tracker",
-  description: "Track your spending, bank switches, and investment portfolio in real-time.",
+  title: "WealthBase | Personal Dashboard",
+  description: "Track your income, expenses, and portfolio in one place.",
 };
 
 export default function RootLayout({
@@ -24,11 +20,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
-      </body>
+      {/* 2. Apply Poppins to the whole body */}
+      <body className={poppins.className}>{children}</body>
     </html>
   );
 }
