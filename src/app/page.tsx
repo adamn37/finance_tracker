@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { useFinanceData, Transaction } from "@/hooks/useFinanceData";
 import { Plus, Wallet, ArrowUpRight, ArrowDownLeft, Trash2, PieChart as PieIcon, BarChart3, AlertCircle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Pencil, Check, X, CreditCard as CardIcon, Calendar as CalendarIcon, CheckCircle2, XCircle, Clock, RefreshCw, Search, Lock, Sparkles, Settings2, Activity, DownloadCloud, GripHorizontal, TrendingUp, Layers, Upload, Moon, Sun } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
@@ -9,6 +9,20 @@ import { differenceInDays, parseISO, isFuture, isValid, isBefore, addMonths, sub
 const CATEGORIES = ["Uncategorized", "Groceries", "Transport", "Food", "Entertainment", "Rent", "Hobby", "Investing", "Subscriptions", "Electricity", "WIFI", "Gifts"];
 const PIE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#6366f1", "#14b8a6", "#f97316", "#06b6d4", "#84cc16"];
 const PRIORITY_COLORS = { need: "bg-red-100 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800", want: "bg-yellow-100 text-yellow-700 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800", save: "bg-green-100 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800" };
+
+// --- DICTIONARIES (Clean Data Mapping) ---
+// Maps global ISIN barcodes to the exact ticker we want to display in the UI
+const ISIN_DICTIONARY: Record<string, string> = {
+  "IE00BK5BQV03": "VHVG.L",
+  "IE00BK5BR733": "VFEG.L",
+};
+
+// Maps shorthand broker tickers to specific Yahoo Finance Exchange Suffixes
+const TICKER_DICTIONARY: Record<string, string> = {
+  "ASML": "ASML.AS",
+  "HEIA": "HEIA.AS",
+  "BMW": "BMW.DE",
+};
 
 // --- REUSABLE WIDGET WRAPPER ---
 const WidgetWrapper = ({ title, icon: Icon, onClick, children, isPremium = false, isEditing = false, onRemove = undefined, draggable = false, onDragStart, onDragEnter, onDragEnd }: any) => (
@@ -54,7 +68,7 @@ export default function Dashboard() {
   const [error, setError] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(new Date());
 
-  // DARK MODE STATE
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
 
   useEffect(() => {
@@ -139,6 +153,9 @@ export default function Dashboard() {
   const [expandedSymbols, setExpandedSymbols] = useState<Record<string, boolean>>({});
   const [selectedPlatform, setSelectedPlatform] = useState<string>("All");
 
+  const [showImportMenu, setShowImportMenu] = useState(false);
+  const [importBroker, setImportBroker] = useState<"T212" | "IE" | null>(null);
+
   const getSmartLogo = (symbol: string, name: string) => {
     const n = name.toLowerCase(); const s = symbol.toUpperCase().split('.')[0]; 
     const getGoogleIcon = (domain: string) => `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
@@ -187,10 +204,12 @@ export default function Dashboard() {
     else if (n === "") setCategory("Uncategorized"); 
   }, [note]);
 
+  // --- DEDICATED BROKER IMPORT LOGIC ---
   const handleCsvImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
+    
     reader.onload = (event) => {
         const text = event.target?.result as string;
         if (!text) return;
@@ -198,70 +217,181 @@ export default function Dashboard() {
         if (lines.length < 2) return setError("CSV file seems empty.");
 
         const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, '').toLowerCase());
-        const actionIdx = headers.findIndex(h => h.includes('action'));
-        const tickerIdx = headers.findIndex(h => h.includes('ticker'));
-        const nameIdx = headers.findIndex(h => h.includes('name'));
-        const sharesIdx = headers.findIndex(h => h.includes('no. of shares') || h === 'shares');
-        const priceIdx = headers.findIndex(h => h.includes('price / share') || h === 'price');
-        const timeIdx = headers.findIndex(h => h.includes('time') || h === 'date');
-        const currIdx = headers.findIndex(h => h.includes('currency (price'));
-        const fxRateIdx = headers.findIndex(h => h.includes('exchange rate'));
-
-        if (tickerIdx === -1 || sharesIdx === -1 || priceIdx === -1) return setError("Invalid CSV format.");
-
         let importCount = 0;
-        lines.slice(1).forEach(line => {
-            if (!line.trim()) return;
-            const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/"/g, '').trim());
-            if (cols.length <= Math.max(tickerIdx, sharesIdx, priceIdx)) return;
 
-            const action = actionIdx >= 0 ? cols[actionIdx].toLowerCase() : 'buy';
-            
-            if (action.includes('buy') || action.includes('sell')) {
-                let symbol = cols[tickerIdx];
-                const name = nameIdx >= 0 ? cols[nameIdx] : symbol;
-                let shares = parseFloat(cols[sharesIdx]);
-                let price = parseFloat(cols[priceIdx]);
-                const currency = currIdx >= 0 ? cols[currIdx] : '';
-                let fxRate = fxRateIdx >= 0 ? parseFloat(cols[fxRateIdx]) : 1;
+        if (importBroker === "T212") {
+            const actionIdx = headers.findIndex(h => h.includes('action'));
+            const tickerIdx = headers.findIndex(h => h.includes('ticker'));
+            const nameIdx = headers.findIndex(h => h.includes('name'));
+            const sharesIdx = headers.findIndex(h => h.includes('no. of shares') || h === 'shares');
+            const priceIdx = headers.findIndex(h => h.includes('price / share') || h === 'price');
+            const timeIdx = headers.findIndex(h => h.includes('time') || h === 'date');
+            const currIdx = headers.findIndex(h => h.includes('currency (price'));
+            const fxRateIdx = headers.findIndex(h => h.includes('exchange rate'));
+            const isinIdx = headers.findIndex(h => h === 'isin' || h.includes('isin'));
+
+            if (tickerIdx === -1 || sharesIdx === -1 || priceIdx === -1) {
+                return setError("Invalid Trading 212 CSV format. Cannot find Ticker, Shares, or Price.");
+            }
+
+            lines.slice(1).forEach(line => {
+                if (!line.trim()) return;
+                const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/"/g, '').trim());
+                if (cols.length <= Math.max(tickerIdx, sharesIdx, priceIdx)) return;
+
+                const action = actionIdx >= 0 ? cols[actionIdx].toLowerCase() : 'buy';
                 
-                if (isNaN(shares) || isNaN(price)) return;
-                if (isNaN(fxRate) || fxRate === 0) fxRate = 1;
-                if (action.includes('sell')) shares = -Math.abs(shares);
+                if (action.includes('buy') || action.includes('sell')) {
+                    let symbol = cols[tickerIdx];
+                    const isin = isinIdx >= 0 ? cols[isinIdx] : "";
+                    const name = nameIdx >= 0 ? cols[nameIdx] : symbol;
+                    let shares = parseFloat(cols[sharesIdx]);
+                    let price = parseFloat(cols[priceIdx]);
+                    const currency = currIdx >= 0 ? cols[currIdx] : '';
+                    let fxRate = fxRateIdx >= 0 ? parseFloat(cols[fxRateIdx]) : 1;
+                    
+                    if (isNaN(shares) || isNaN(price)) return;
+                    if (isNaN(fxRate) || fxRate === 0) fxRate = 1;
+                    if (action.includes('sell')) shares = -Math.abs(shares);
 
-                if (symbol === 'ASML') symbol = 'ASML.AS';
-                else if (symbol === 'VHVG') symbol = 'VHVG.AS';
-                else if (symbol === 'VFEG') symbol = 'VFEG.AS';
-                else if (currency === 'GBX' || currency === 'GBP') {
-                    if (!symbol.includes('.')) symbol += '.L'; 
-                } else if (currency === 'EUR') {
-                    if (symbol === 'HEIA') symbol = 'HEIA.AS'; 
-                    else if (symbol === 'BMW') symbol = 'BMW.DE';
-                    else if (!symbol.includes('.')) symbol += '.DE'; 
+                    // THE DICTIONARY MAPPING
+                    if (isin && ISIN_DICTIONARY[isin]) {
+                        symbol = ISIN_DICTIONARY[isin];
+                    } else if (TICKER_DICTIONARY[symbol]) {
+                        symbol = TICKER_DICTIONARY[symbol];
+                    } else if (currency === 'GBX' || currency === 'GBP' || currency === 'gbp' || currency === 'gbx') {
+                        if (!symbol.includes('.')) symbol += '.L'; 
+                    } else if (currency === 'EUR' || currency === 'eur') {
+                        if (!symbol.includes('.')) symbol += '.DE'; 
+                    }
+
+                    let purchasePriceGBP = price;
+                    if (currency.toUpperCase() === 'GBX') purchasePriceGBP = price / 100; 
+                    else if (currency.toUpperCase() === 'USD' || currency.toUpperCase() === 'EUR') purchasePriceGBP = price / fxRate; 
+
+                    if (symbol) {
+                        addPortfolioItem({
+                            name: name || symbol, symbol: symbol, amount: shares, purchasePrice: purchasePriceGBP,
+                            imageUrl: getSmartLogo(symbol, name || symbol), type: 'stock',
+                            date: timeIdx >= 0 && cols[timeIdx] ? cols[timeIdx].split(' ')[0] : new Date().toISOString().split('T')[0],
+                            platform: 'Trading 212'
+                        });
+                        importCount++;
+                    }
                 }
-
-                let purchasePriceGBP = price;
-                if (currency === 'GBX') purchasePriceGBP = price / 100; 
-                else if (currency === 'USD' || currency === 'EUR') purchasePriceGBP = price / fxRate; 
-
-                if (symbol) {
-                    addPortfolioItem({
-                        name: name || symbol, symbol: symbol, amount: shares, purchasePrice: purchasePriceGBP,
-                        imageUrl: getSmartLogo(symbol, name || symbol), type: 'stock',
-                        date: timeIdx >= 0 && cols[timeIdx] ? cols[timeIdx].split(' ')[0] : new Date().toISOString().split('T')[0],
-                        platform: 'Trading 212'
-                    });
-                    importCount++;
+            });
+        } 
+        // --------------------------------------------------------
+        // BROKER 2: INVESTENGINE PARSER
+        // --------------------------------------------------------
+        else if (importBroker === "IE") {
+            // 1. Skip preamble: Find the actual header row
+            let headerRowIdx = 0;
+            for (let i = 0; i < Math.min(5, lines.length); i++) {
+                if (lines[i].toLowerCase().includes('transaction type')) {
+                    headerRowIdx = i;
+                    break;
                 }
             }
-        });
-        alert(`Successfully synced ${importCount} trades from Trading 212! Click "Refresh Prices" to see live data.`);
+
+            const actualHeaders = lines[headerRowIdx].split(',').map(h => h.trim().replace(/"/g, '').toLowerCase());
+            
+            const securityIdx = actualHeaders.findIndex(h => h.includes('security') || h.includes('isin'));
+            const actionIdx = actualHeaders.findIndex(h => h.includes('transaction type'));
+            const sharesIdx = actualHeaders.findIndex(h => h.includes('quantity'));
+            const priceIdx = actualHeaders.findIndex(h => h.includes('share price'));
+            const timeIdx = actualHeaders.findIndex(h => h.includes('trade date'));
+            
+            if (securityIdx === -1 || actionIdx === -1 || sharesIdx === -1 || priceIdx === -1) {
+                return setError("Invalid InvestEngine CSV format. Ensure you exported the 'Trading statement'.");
+            }
+
+            lines.slice(headerRowIdx + 1).forEach(line => {
+                if (!line.trim()) return;
+                const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/"/g, '').trim());
+                if (cols.length <= Math.max(securityIdx, sharesIdx, priceIdx)) return;
+
+                const action = cols[actionIdx].toLowerCase();
+                
+                if (action.includes('buy') || action.includes('sell') || action.includes('reinvestment')) {
+                    const securityStr = cols[securityIdx]; // e.g. "Vanguard FTSE... / ISIN IE00B..."
+                    
+                    // 2. REGEX: Extract exactly 12 characters starting with 2 letters (the ISIN)
+                    const isinMatch = securityStr.match(/[A-Z]{2}[0-9A-Z]{10}/);
+                    const isin = isinMatch ? isinMatch[0] : "";
+                    
+                    // 3. Clean Name: Split at "/ ISIN" and take the first part
+                    const cleanName = securityStr.split('/ ISIN')[0].trim();
+
+                    let shares = parseFloat(cols[sharesIdx]);
+                    
+                    // 4. Clean Price: Strip the '£' or any other non-numeric character (except the decimal)
+                    let price = parseFloat(cols[priceIdx].replace(/[^0-9.-]+/g, ""));
+                    
+                    if (isNaN(shares) || isNaN(price)) return;
+                    if (action.includes('sell')) shares = -Math.abs(shares);
+
+                    // 5. Map the ISIN to our Yahoo Ticker Dictionary
+                    let symbol = "";
+                    if (isin && ISIN_DICTIONARY[isin]) {
+                        symbol = ISIN_DICTIONARY[isin];
+                    } else {
+                        // If we don't have it in the dictionary yet, just show the ISIN so the user knows it imported!
+                        symbol = isin || "UNKNOWN";
+                    }
+
+                    // 5. Convert DD/MM/YYYY to YYYY-MM-DD
+                    let formattedDate = new Date().toISOString().split('T')[0];
+                    if (timeIdx >= 0 && cols[timeIdx]) {
+                        let rawDate = cols[timeIdx].split(' ')[0]; // Grabs "03/10/2025"
+                        if (rawDate.includes('/')) {
+                            const [d, m, y] = rawDate.split('/'); // Splits by slash
+                            if (y && m && d) formattedDate = `${y}-${m}-${d}`; // Reassembles backwards
+                        } else {
+                            formattedDate = rawDate;
+                        }
+                    }
+
+                    if (symbol) {
+                        addPortfolioItem({
+                            name: cleanName, 
+                            symbol: symbol, 
+                            amount: shares, 
+                            purchasePrice: price, 
+                            imageUrl: getSmartLogo(symbol, cleanName), 
+                            type: 'stock',
+                            date: formattedDate,
+                            platform: 'InvestEngine'
+                        });
+                        importCount++;
+                    }
+                }
+            });
+        }
+
+        if (importCount > 0) {
+            alert(`Successfully synced ${importCount} trades from ${importBroker === 'T212' ? 'Trading 212' : 'InvestEngine'}! Click "Refresh Prices" to see live data.`);
+        } else {
+            setError("No valid buy/sell transactions found in this file.");
+        }
         e.target.value = ''; 
+        setImportBroker(null);
     };
     reader.readAsText(file);
   };
 
-  // --- DATA CALCULATIONS ---
+  const handleSelectSearchResult = (asset: any) => {
+    if (portType === "crypto") { setPortSymbol(asset.api_symbol || asset.id); setPortName(asset.name); setPortImageUrl(asset.thumb); } 
+    else { setPortSymbol(asset.symbol); setPortName(asset.name); setPortImageUrl(getSmartLogo(asset.symbol, asset.name)); }
+    setSearchResults([]);
+  };
+
+  const handleAddPortfolio = () => {
+    if (!portName || !portSymbol || !portAmount || !portPurchasePrice || !portPlatform) return setError("Please fill all fields.");
+    addPortfolioItem({ name: portName, symbol: portType === "crypto" ? portSymbol.toLowerCase().trim() : portSymbol.toUpperCase().trim(), amount: parseFloat(portAmount), purchasePrice: parseFloat(portPurchasePrice), imageUrl: portImageUrl, type: portType, date: portDate, platform: portPlatform.trim() });
+    setPortName(""); setPortSymbol(""); setPortAmount(""); setPortPurchasePrice(""); setPortImageUrl(""); setSearchResults([]); setPortPlatform("");
+  };
+
   const currentMonthKey = format(selectedMonth, "yyyy-MM");
   const currentTransactions = transactions.filter((tx) => isSameMonth(parseISO(tx.date), selectedMonth)).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const stats = useMemo(() => {
@@ -329,18 +459,6 @@ export default function Dashboard() {
 
   const activeSwitches = switches.filter(sw => sw.status === "active").sort((a, b) => new Date(a.requirements.payInDeadline).getTime() - new Date(b.requirements.payInDeadline).getTime());
   const toggleExpand = (symbol: string) => setExpandedSymbols(prev => ({ ...prev, [symbol]: !prev[symbol] }));
-
-  const handleSelectSearchResult = (asset: any) => {
-    if (portType === "crypto") { setPortSymbol(asset.api_symbol || asset.id); setPortName(asset.name); setPortImageUrl(asset.thumb); } 
-    else { setPortSymbol(asset.symbol); setPortName(asset.name); setPortImageUrl(getSmartLogo(asset.symbol, asset.name)); }
-    setSearchResults([]);
-  };
-
-  const handleAddPortfolio = () => {
-    if (!portName || !portSymbol || !portAmount || !portPurchasePrice || !portPlatform) return setError("Please fill all fields.");
-    addPortfolioItem({ name: portName, symbol: portType === "crypto" ? portSymbol.toLowerCase().trim() : portSymbol.toUpperCase().trim(), amount: parseFloat(portAmount), purchasePrice: parseFloat(portPurchasePrice), imageUrl: portImageUrl, type: portType, date: portDate, platform: portPlatform.trim() });
-    setPortName(""); setPortSymbol(""); setPortAmount(""); setPortPurchasePrice(""); setPortImageUrl(""); setSearchResults([]); setPortPlatform("");
-  };
 
   const handleMonthChange = (direction: "prev" | "next") => { setSelectedMonth(prev => direction === "prev" ? subMonths(prev, 1) : addMonths(prev, 1)); setIsEditingBudget(false); setEditingTxId(null); };
   const handleBudgetSave = () => { if (tempBudget && parseFloat(tempBudget) >= 0) { updateBudget(currentMonthKey, parseFloat(tempBudget)); setIsEditingBudget(false); } };
@@ -460,7 +578,6 @@ export default function Dashboard() {
           </WidgetWrapper>
         );
 
-      // --- THE NEW ASSET ALLOCATION CHART ---
       case "allocation":
         const allocationData = portfolioWithMetrics.map(a => ({ name: a.symbol, value: a.liveValue })).filter(a => a.value > 0);
         return (
@@ -842,13 +959,47 @@ export default function Dashboard() {
         {activeTab === "portfolio" && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in duration-300">
             <div className="lg:col-span-1 bg-white dark:bg-gray-900 p-6 rounded-xl shadow-sm h-fit border border-gray-100 dark:border-gray-800">
-                <div className="flex justify-between items-center mb-4">
+                <div className="flex justify-between items-center mb-4 relative z-30">
                   <h2 className="text-lg font-semibold dark:text-white">Record Trade</h2>
-                  <div>
-                    <input type="file" id="csvUpload" accept=".csv" className="hidden" onChange={handleCsvImport} />
-                    <label htmlFor="csvUpload" className="cursor-pointer bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors border border-blue-200 dark:border-blue-800">
-                       <Upload size={12} /> Import T212 CSV
-                    </label>
+                  <div className="relative">
+                    <button onClick={() => setShowImportMenu(!showImportMenu)} className="cursor-pointer bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors border border-blue-200 dark:border-blue-800">
+                       <Upload size={12} /> Import CSV <ChevronDown size={12} />
+                    </button>
+                    
+                    {/* Hidden input with the REF attached outside the conditionally rendered menu */}
+                    <input 
+                        type="file" 
+                        id="csvUpload"
+                        accept=".csv" 
+                        className="hidden" 
+                        ref={fileInputRef} 
+                        onChange={handleCsvImport} 
+                    />
+                    
+                    {showImportMenu && (
+                      <div className="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg overflow-hidden flex flex-col z-50">
+                        <button 
+                            onClick={() => { 
+                                setImportBroker("T212"); 
+                                fileInputRef.current?.click(); 
+                                setShowImportMenu(false); 
+                            }} 
+                            className="px-4 py-3 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-700 font-medium dark:text-white"
+                        >
+                            Trading 212
+                        </button>
+                        <button 
+                            onClick={() => { 
+                                setImportBroker("IE"); 
+                                fileInputRef.current?.click(); 
+                                setShowImportMenu(false); 
+                            }} 
+                            className="px-4 py-3 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer font-medium dark:text-white"
+                        >
+                            InvestEngine
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
                 {error && <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100"><AlertCircle size={16} /> {error}</div>}
@@ -936,7 +1087,8 @@ export default function Dashboard() {
                                     const lotCost = lot.amount * (lot.purchasePrice || 0); const lotValue = lot.amount * currentPrice; const lotPL = lotValue - lotCost; const lotProfit = lotPL >= 0;
                                     return (
                                         <div key={lot.id} className="flex justify-between items-center bg-white dark:bg-gray-800 p-3 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm text-sm">
-                                            <div><div className="flex items-center gap-2"><span className="font-medium dark:text-white">{Number(lot.amount.toFixed(8))} {asset.type === 'crypto' ? 'Coins' : 'Shares'}</span><span className="text-gray-400">@ £{lot.purchasePrice}</span></div><div className="flex items-center gap-2 text-xs text-gray-500 mt-1"><span className="bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">{lot.platform || "Unknown"}</span><span>{lot.date ? format(parseISO(lot.date), "dd MMM yyyy") : "No date"}</span></div></div>
+                                            <div><div className="flex items-center gap-2"><span className="font-medium dark:text-white">{Number(lot.amount.toFixed(8))} {asset.type === 'crypto' ? 'Coins' : 'Shares'}</span><span className="text-gray-400">@ £{lot.purchasePrice}</span></div><div className="flex items-center gap-2 text-xs text-gray-500 mt-1"><span className="bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">{lot.platform || "Unknown"}</span>{/* If the date is broken, it gracefully displays the raw string instead of crashing! */}
+<span>{lot.date ? (isValid(parseISO(lot.date)) ? format(parseISO(lot.date), "dd MMM yyyy") : lot.date) : "No date"}</span></div></div>
                                             <div className="flex items-center gap-4">{currentPrice > 0 && (<span className={`font-semibold ${lotProfit ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>{lotProfit ? '+' : '-'}£{Math.abs(lotPL).toFixed(2)}</span>)}<button onClick={() => removePortfolioItem(lot.id)} className="text-gray-400 hover:text-red-500 transition p-1.5 hover:bg-red-50 dark:hover:bg-gray-700 rounded-md"><Trash2 size={16}/></button></div>
                                         </div>
                                     );

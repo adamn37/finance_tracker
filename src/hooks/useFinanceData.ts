@@ -2,66 +2,26 @@
 
 import { useState, useEffect } from "react";
 
-export type PortfolioItem = {
-  id: string;
-  symbol: string; 
-  name: string;
-  amount: number;
-  purchasePrice: number; 
-  imageUrl?: string;     
-  type: "crypto" | "stock";
-  date: string;
-  platform: string;
+// --- YAHOO FINANCE FETCH ALIASES ---
+// If Yahoo's data for a specific exchange is broken (like VHVG.L), 
+// this dictionary tells the fetcher to silently pull from a reliable backup exchange.
+const FETCH_ALIASES: Record<string, string> = {
+  "ASML.AS": "ASML",   // Map Amsterdam to US Nasdaq
 };
 
-export type BankAccount = {
-  id: string;
-  name: string;
-  type: "debit" | "credit";
-  color: string;
-};
-
-export type Transaction = {
-  id: string;
-  date: string;
-  amount: number;
-  category: string;
-  type: "income" | "expense";
-  priority: "need" | "want" | "save";
-  bankAccountId?: string;
-  note?: string;
-};
-
-export type Subscription = {
-  id: string;
-  name: string;
-  cost: number;
-  billingDay: number;
-};
-
-export type BankSwitch = {
-  id: string;
-  bankName: string;
-  bonusAmount: number;
-  switchDate: string;
-  requirements: {
-    payInAmount: number;
-    payInDeadline: string;
-    directDebitsNeeded: number;
-  };
-  status: "active" | "completed" | "failed";
-};
+export type PortfolioItem = { id: string; symbol: string; name: string; amount: number; purchasePrice: number; imageUrl?: string; type: "crypto" | "stock"; date: string; platform: string; };
+export type BankAccount = { id: string; name: string; type: "debit" | "credit"; color: string; };
+export type Transaction = { id: string; date: string; amount: number; category: string; type: "income" | "expense"; priority: "need" | "want" | "save"; bankAccountId?: string; note?: string; };
+export type Subscription = { id: string; name: string; cost: number; billingDay: number; };
+export type BankSwitch = { id: string; bankName: string; bonusAmount: number; switchDate: string; requirements: { payInAmount: number; payInDeadline: string; directDebitsNeeded: number; }; status: "active" | "completed" | "failed"; };
 
 export function useFinanceData() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [switches, setSwitches] = useState<BankSwitch[]>([]);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [budgets, setBudgets] = useState<Record<string, number>>({});
-  const [accounts, setAccounts] = useState<BankAccount[]>([
-    { id: "default-1", name: "Main Debit", type: "debit", color: "bg-gray-800" }
-  ]);
+  const [accounts, setAccounts] = useState<BankAccount[]>([{ id: "default-1", name: "Main Debit", type: "debit", color: "bg-gray-800" }]);
   const [isLoaded, setIsLoaded] = useState(false);
-  
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [portfolio, setPortfolio] = useState<PortfolioItem[]>([]);
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
@@ -95,7 +55,6 @@ export function useFinanceData() {
     if (savedSubs) setSubscriptions(JSON.parse(savedSubs));
     if (savedBudgets) setBudgets(JSON.parse(savedBudgets));
     if (savedAccounts) setAccounts(JSON.parse(savedAccounts));
-    
     setIsLoaded(true);
   }, []);
 
@@ -113,19 +72,12 @@ export function useFinanceData() {
 
   const addTransaction = (tx: Omit<Transaction, "id">) => setTransactions(prev => [{ ...tx, id: crypto.randomUUID() }, ...prev]);
   const removeTransaction = (id: string) => setTransactions(prev => prev.filter(t => t.id !== id));
-  const editTransaction = (id: string, updatedData: Partial<Transaction>) => {
-    setTransactions(prev => prev.map(t => t.id === id ? { ...t, ...updatedData } : t));
-  };
-  
+  const editTransaction = (id: string, updatedData: Partial<Transaction>) => setTransactions(prev => prev.map(t => t.id === id ? { ...t, ...updatedData } : t));
   const addSubscription = (sub: Omit<Subscription, "id">) => setSubscriptions(prev => [...prev, { ...sub, id: crypto.randomUUID() }]);
   const removeSubscription = (id: string) => setSubscriptions(prev => prev.filter(s => s.id !== id));
-
   const addSwitch = (bankSwitch: Omit<BankSwitch, "id">) => setSwitches(prev => [...prev, { ...bankSwitch, id: crypto.randomUUID() }]);
   const removeSwitch = (id: string) => setSwitches(prev => prev.filter(s => s.id !== id));
-  const updateSwitchStatus = (id: string, status: "active" | "completed" | "failed") => {
-    setSwitches(prev => prev.map(s => s.id === id ? { ...s, status } : s));
-  };
-
+  const updateSwitchStatus = (id: string, status: "active" | "completed" | "failed") => setSwitches(prev => prev.map(s => s.id === id ? { ...s, status } : s));
   const updateBudget = (monthKey: string, amount: number) => setBudgets(prev => ({ ...prev, [monthKey]: amount }));
 
   const addAccount = (name: string, type: "debit" | "credit") => {
@@ -168,7 +120,6 @@ export function useFinanceData() {
     if ((portfolio || []).length === 0) return;
     setIsRefreshing(true); 
     
-    // Override logic: Use the button toggle if pressed, otherwise use the saved state
     const isExtended = extendedOverride !== undefined ? extendedOverride : useExtendedHours;
 
     try {
@@ -199,15 +150,14 @@ export function useFinanceData() {
          
          await Promise.all(uniqueStocks.map(async (ticker) => {
             try {
-                let fetchTicker = ticker;
-                if (ticker === 'ASML.AS') fetchTicker = 'ASML'; 
+                // THE DICTIONARY FIX: Instantly map the UI ticker to the correct Yahoo API ticker
+                const fetchTicker = FETCH_ALIASES[ticker] || ticker; 
 
                 const res = await fetch(`/api/stock?symbol=${fetchTicker.toUpperCase()}`);
                 
                 if (res.ok) {
                     const data = await res.json();
                     
-                    // Dig deeper into Yahoo's JSON structure
                     const result = data?.chart?.result?.[0];
                     const meta = result?.meta;
                     const closePrices = result?.indicators?.quote?.[0]?.close;
@@ -215,13 +165,10 @@ export function useFinanceData() {
                     if (meta && meta.regularMarketPrice) {
                         let price = meta.regularMarketPrice;
                         
-                        // THE BULLETPROOF EXTENDED HOURS LOGIC
                         if (isExtended) {
                             if (meta.postMarketPrice) {
-                                // 1. Easy Mode: Yahoo explicitly provided it
                                 price = meta.postMarketPrice;
                             } else if (closePrices && closePrices.length > 0) {
-                                // 2. Hard Mode: Scrape the very last trade from the physical chart data
                                 const validPrices = closePrices.filter((p: number | null) => p !== null);
                                 if (validPrices.length > 0) {
                                     price = validPrices[validPrices.length - 1];
