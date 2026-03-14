@@ -10,8 +10,8 @@ export async function GET(request: Request) {
 
   try {
     // We fetch directly from Yahoo Finance.
-    // Since this runs on the server, there are NO CORS issues.
-    const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`;
+    // ADDED: ?includePrePost=true tells Yahoo to send us the secret after-hours data!
+    const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?includePrePost=true`;
     
     const res = await fetch(targetUrl, {
       headers: {

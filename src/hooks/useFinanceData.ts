@@ -62,11 +62,10 @@ export function useFinanceData() {
   ]);
   const [isLoaded, setIsLoaded] = useState(false);
   
-  // NEW: Loading state for the refresh button
   const [isRefreshing, setIsRefreshing] = useState(false);
-  
   const [portfolio, setPortfolio] = useState<PortfolioItem[]>([]);
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
+  const [useExtendedHours, setUseExtendedHours] = useState(false);
 
   useEffect(() => {
     const savedTx = localStorage.getItem("transactions");
@@ -75,6 +74,9 @@ export function useFinanceData() {
     const savedBudgets = localStorage.getItem("monthlyBudgets");
     const savedAccounts = localStorage.getItem("bankAccounts");
     const savedPortfolio = localStorage.getItem("portfolio");
+    const savedExtended = localStorage.getItem("useExtendedHours");
+    
+    if (savedExtended) setUseExtendedHours(JSON.parse(savedExtended));
     if (savedPortfolio) setPortfolio(JSON.parse(savedPortfolio));
     
     if (savedTx) {
@@ -105,12 +107,12 @@ export function useFinanceData() {
       localStorage.setItem("subscriptions", JSON.stringify(subscriptions));
       localStorage.setItem("monthlyBudgets", JSON.stringify(budgets));
       localStorage.setItem("bankAccounts", JSON.stringify(accounts));
+      localStorage.setItem("useExtendedHours", JSON.stringify(useExtendedHours));
     }
-  }, [transactions, switches, subscriptions, budgets, accounts, portfolio, isLoaded]);
+  }, [transactions, switches, subscriptions, budgets, accounts, portfolio, useExtendedHours, isLoaded]);
 
   const addTransaction = (tx: Omit<Transaction, "id">) => setTransactions(prev => [{ ...tx, id: crypto.randomUUID() }, ...prev]);
   const removeTransaction = (id: string) => setTransactions(prev => prev.filter(t => t.id !== id));
-  
   const editTransaction = (id: string, updatedData: Partial<Transaction>) => {
     setTransactions(prev => prev.map(t => t.id === id ? { ...t, ...updatedData } : t));
   };
@@ -129,8 +131,7 @@ export function useFinanceData() {
   const addAccount = (name: string, type: "debit" | "credit") => {
     const colors = ["bg-blue-600", "bg-emerald-600", "bg-purple-600", "bg-orange-600", "bg-black", "bg-pink-600"];
     const randomColor = colors[Math.floor(Math.random() * colors.length)];
-    const newAccount: BankAccount = { id: crypto.randomUUID(), name, type, color: randomColor };
-    setAccounts(prev => [...prev, newAccount]);
+    setAccounts(prev => [...prev, { id: crypto.randomUUID(), name, type, color: randomColor }]);
   };
 
   const removeAccount = (id: string) => {
@@ -152,8 +153,7 @@ export function useFinanceData() {
       const monthKey = tx.date.slice(0, 7); 
       if (!history[monthKey]) {
         const dateObj = new Date(tx.date);
-        const label = dateObj.toLocaleString('default', { month: 'short', year: '2-digit' });
-        history[monthKey] = { month: label, income: 0, expense: 0 };
+        history[monthKey] = { month: dateObj.toLocaleString('default', { month: 'short', year: '2-digit' }), income: 0, expense: 0 };
       }
       if (tx.type === "income") history[monthKey].income += tx.amount;
       else history[monthKey].expense += tx.amount;
@@ -161,87 +161,79 @@ export function useFinanceData() {
     return Object.entries(history).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)).map(([_, val]) => val);
   };
 
-  const addPortfolioItem = (item: Omit<PortfolioItem, "id">) => {
-    setPortfolio(prev => [...prev, { ...item, id: crypto.randomUUID() }]);
-  };
+  const addPortfolioItem = (item: Omit<PortfolioItem, "id">) => setPortfolio(prev => [...prev, { ...item, id: crypto.randomUUID() }]);
+  const removePortfolioItem = (id: string) => setPortfolio(prev => prev.filter(p => p.id !== id));
 
-  const removePortfolioItem = (id: string) => {
-    setPortfolio(prev => prev.filter(p => p.id !== id));
-  };
-
-  const refreshPrices = async () => {
+  const refreshPrices = async (extendedOverride?: boolean) => {
     if ((portfolio || []).length === 0) return;
+    setIsRefreshing(true); 
     
-    setIsRefreshing(true); // Start loading state
+    // Override logic: Use the button toggle if pressed, otherwise use the saved state
+    const isExtended = extendedOverride !== undefined ? extendedOverride : useExtendedHours;
 
     try {
       let newPrices: Record<string, number> = { ...livePrices };
 
-      // --- 1. HANDLE CRYPTO (CoinGecko) ---
+      // --- CRYPTO ---
       const cryptoItems = portfolio.filter(p => p.type === "crypto");
       if (cryptoItems.length > 0) {
         const ids = Array.from(new Set(cryptoItems.map(p => p.symbol))).join(",");
         const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=gbp`);
         if (res.ok) {
           const data = await res.json();
-          cryptoItems.forEach(p => {
-            if (data[p.symbol] && data[p.symbol].gbp) {
-              newPrices[p.symbol] = data[p.symbol].gbp;
-            }
-          });
+          cryptoItems.forEach(p => { if (data[p.symbol]?.gbp) newPrices[p.symbol] = data[p.symbol].gbp; });
         }
       }
 
-      // --- 2. HANDLE STOCKS & ETFs (Via Local API) ---
+      // --- STOCKS & ETFs ---
       const stockItems = portfolio.filter(p => p.type === "stock");
-      
       if (stockItems.length > 0) {
          let fxRates: Record<string, number> = { "USD": 0.79, "EUR": 0.85 }; 
-         
          try {
-            // Fetch live rates using YOUR new internal API
-            const [usdRes, eurRes] = await Promise.all([
-                fetch(`/api/stock?symbol=GBP=X`),
-                fetch(`/api/stock?symbol=EURGBP=X`)
-            ]);
-            
-            if (usdRes.ok) {
-               const usdData = await usdRes.json();
-               const usdPrice = usdData?.chart?.result?.[0]?.meta?.regularMarketPrice;
-               if (usdPrice) fxRates["USD"] = usdPrice;
-            }
-            
-            if (eurRes.ok) {
-               const eurData = await eurRes.json();
-               const eurPrice = eurData?.chart?.result?.[0]?.meta?.regularMarketPrice;
-               if (eurPrice) fxRates["EUR"] = eurPrice;
-            }
-         } catch (e) {
-            console.error("Using fallback exchange rates");
-         }
+            const [usdRes, eurRes] = await Promise.all([ fetch(`/api/stock?symbol=GBP=X`), fetch(`/api/stock?symbol=EURGBP=X`) ]);
+            if (usdRes.ok) { const data = await usdRes.json(); const p = data?.chart?.result?.[0]?.meta?.regularMarketPrice; if (p) fxRates["USD"] = p; }
+            if (eurRes.ok) { const data = await eurRes.json(); const p = data?.chart?.result?.[0]?.meta?.regularMarketPrice; if (p) fxRates["EUR"] = p; }
+         } catch (e) { console.error("Using fallback exchange rates"); }
 
          const uniqueStocks = Array.from(new Set(stockItems.map(p => p.symbol)));
          
          await Promise.all(uniqueStocks.map(async (ticker) => {
             try {
-                // Call your local API instead of the proxy
-                const res = await fetch(`/api/stock?symbol=${ticker.toUpperCase()}`);
+                let fetchTicker = ticker;
+                if (ticker === 'ASML.AS') fetchTicker = 'ASML'; 
+
+                const res = await fetch(`/api/stock?symbol=${fetchTicker.toUpperCase()}`);
                 
                 if (res.ok) {
                     const data = await res.json();
-                    const meta = data?.chart?.result?.[0]?.meta;
+                    
+                    // Dig deeper into Yahoo's JSON structure
+                    const result = data?.chart?.result?.[0];
+                    const meta = result?.meta;
+                    const closePrices = result?.indicators?.quote?.[0]?.close;
                     
                     if (meta && meta.regularMarketPrice) {
                         let price = meta.regularMarketPrice;
+                        
+                        // THE BULLETPROOF EXTENDED HOURS LOGIC
+                        if (isExtended) {
+                            if (meta.postMarketPrice) {
+                                // 1. Easy Mode: Yahoo explicitly provided it
+                                price = meta.postMarketPrice;
+                            } else if (closePrices && closePrices.length > 0) {
+                                // 2. Hard Mode: Scrape the very last trade from the physical chart data
+                                const validPrices = closePrices.filter((p: number | null) => p !== null);
+                                if (validPrices.length > 0) {
+                                    price = validPrices[validPrices.length - 1];
+                                }
+                            }
+                        }
+
                         const currency = meta.currency; 
                         
-                        if (currency === "USD") {
-                            price = price * fxRates["USD"]; 
-                        } else if (currency === "EUR") {
-                            price = price * fxRates["EUR"];
-                        } else if (currency === "GBp") {
-                            price = price / 100; 
-                        }
+                        if (currency === "USD") price = price * fxRates["USD"]; 
+                        else if (currency === "EUR") price = price * fxRates["EUR"];
+                        else if (currency === "GBp") price = price / 100; 
                         
                         newPrices[ticker] = price; 
                     }
@@ -255,14 +247,14 @@ export function useFinanceData() {
       setLivePrices(newPrices);
     } catch (err) {
       console.error("Failed to fetch prices:", err);
-      alert("Failed to fetch prices. Check console.");
     } finally {
-      setIsRefreshing(false); // Stop loading state
+      setIsRefreshing(false); 
     }
   };
 
   return { 
     portfolio, livePrices, addPortfolioItem, removePortfolioItem, refreshPrices, isRefreshing,
+    useExtendedHours, setUseExtendedHours,
     transactions, switches, subscriptions, budgets, accounts, 
     addTransaction, removeTransaction, editTransaction,
     addSwitch, removeSwitch, updateSwitchStatus, 
