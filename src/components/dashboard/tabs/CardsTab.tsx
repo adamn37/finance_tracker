@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { CreditCard as CardIcon, Check, X, Trash2, Pencil, TrendingUp, Wallet, Building, Sparkles, AlertCircle } from "lucide-react";
+import { CreditCard, Check, X, Trash2, Pencil, TrendingUp, Wallet, Building, Sparkles, AlertCircle } from "lucide-react";
 
 const ACCOUNT_TYPES = [
   { id: "debit", label: "Current Account" },
