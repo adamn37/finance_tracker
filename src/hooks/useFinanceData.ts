@@ -1,212 +1,410 @@
 "use client";
 
-import { useState, useEffect } from "react";
-
-// --- YAHOO FINANCE FETCH ALIASES ---
-// If Yahoo's data for a specific exchange is broken (like VHVG.L), 
-// this dictionary tells the fetcher to silently pull from a reliable backup exchange.
-const FETCH_ALIASES: Record<string, string> = {
-  "ASML.AS": "ASML",   // Map Amsterdam to US Nasdaq
-};
-
-export type PortfolioItem = { id: string; symbol: string; name: string; amount: number; purchasePrice: number; imageUrl?: string; type: "crypto" | "stock"; date: string; platform: string; };
-export type BankAccount = { id: string; name: string; type: "debit" | "credit"; color: string; };
-export type Transaction = { id: string; date: string; amount: number; category: string; type: "income" | "expense"; priority: "need" | "want" | "save"; bankAccountId?: string; note?: string; };
-export type Subscription = { id: string; name: string; cost: number; billingDay: number; };
-export type BankSwitch = { id: string; bankName: string; bonusAmount: number; switchDate: string; requirements: { payInAmount: number; payInDeadline: string; directDebitsNeeded: number; }; status: "active" | "completed" | "failed"; };
+import { useState, useEffect, useCallback } from "react";
+import { createClient } from "@/utils/supabase/client";
+import { useRouter } from "next/navigation";
 
 export function useFinanceData() {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [switches, setSwitches] = useState<BankSwitch[]>([]);
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
-  const [budgets, setBudgets] = useState<Record<string, number>>({});
-  const [accounts, setAccounts] = useState<BankAccount[]>([{ id: "default-1", name: "Main Debit", type: "debit", color: "bg-gray-800" }]);
+  const supabase = createClient();
+  const router = useRouter();
+
+  // Core Global States
   const [isLoaded, setIsLoaded] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [portfolio, setPortfolio] = useState<PortfolioItem[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [transactions, setTransactions] = useState<any[]>([]);
+  const [portfolio, setPortfolio] = useState<any[]>([]);
+  const [subscriptions, setSubscriptions] = useState<any[]>([]);
+  const [switches, setSwitches] = useState<any[]>([]);
+  const [budgets, setBudgets] = useState<any[]>([]);
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [propAccounts, setPropAccounts] = useState<any[]>([]);
+  const [propTransactions, setPropTransactions] = useState<any[]>([]);
+  const [brokerages, setBrokerages] = useState<any[]>([]); // <-- NEW: Brokerage State
+  
+  // Market Price States
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [useExtendedHours, setUseExtendedHours] = useState(false);
 
+  // 1. Session Verification & Initial Data Fetch
   useEffect(() => {
-    const savedTx = localStorage.getItem("transactions");
-    const savedSwitches = localStorage.getItem("bankSwitches");
-    const savedSubs = localStorage.getItem("subscriptions");
-    const savedBudgets = localStorage.getItem("monthlyBudgets");
-    const savedAccounts = localStorage.getItem("bankAccounts");
-    const savedPortfolio = localStorage.getItem("portfolio");
-    const savedExtended = localStorage.getItem("useExtendedHours");
-    
-    if (savedExtended) setUseExtendedHours(JSON.parse(savedExtended));
-    if (savedPortfolio) setPortfolio(JSON.parse(savedPortfolio));
-    
-    if (savedTx) {
-      const parsedTx = JSON.parse(savedTx);
-      const migratedTx = parsedTx.map((tx: any) => {
-        let updatedPriority = tx.priority;
-        if (tx.priority === "high") updatedPriority = "need";
-        if (tx.priority === "medium") updatedPriority = "want";
-        if (tx.priority === "low") updatedPriority = "save";
-        return { ...tx, priority: updatedPriority };
-      });
-      setTransactions(migratedTx);
-    }
-    
-    if (savedSwitches) setSwitches(JSON.parse(savedSwitches));
-    if (savedSubs) setSubscriptions(JSON.parse(savedSubs));
-    if (savedBudgets) setBudgets(JSON.parse(savedBudgets));
-    if (savedAccounts) setAccounts(JSON.parse(savedAccounts));
-    setIsLoaded(true);
-  }, []);
+    let isMounted = true;
 
-  useEffect(() => {
-    if (isLoaded) {
-      localStorage.setItem("portfolio", JSON.stringify(portfolio));
-      localStorage.setItem("transactions", JSON.stringify(transactions));
-      localStorage.setItem("bankSwitches", JSON.stringify(switches));
-      localStorage.setItem("subscriptions", JSON.stringify(subscriptions));
-      localStorage.setItem("monthlyBudgets", JSON.stringify(budgets));
-      localStorage.setItem("bankAccounts", JSON.stringify(accounts));
-      localStorage.setItem("useExtendedHours", JSON.stringify(useExtendedHours));
-    }
-  }, [transactions, switches, subscriptions, budgets, accounts, portfolio, useExtendedHours, isLoaded]);
-
-  const addTransaction = (tx: Omit<Transaction, "id">) => setTransactions(prev => [{ ...tx, id: crypto.randomUUID() }, ...prev]);
-  const removeTransaction = (id: string) => setTransactions(prev => prev.filter(t => t.id !== id));
-  const editTransaction = (id: string, updatedData: Partial<Transaction>) => setTransactions(prev => prev.map(t => t.id === id ? { ...t, ...updatedData } : t));
-  const addSubscription = (sub: Omit<Subscription, "id">) => setSubscriptions(prev => [...prev, { ...sub, id: crypto.randomUUID() }]);
-  const removeSubscription = (id: string) => setSubscriptions(prev => prev.filter(s => s.id !== id));
-  const addSwitch = (bankSwitch: Omit<BankSwitch, "id">) => setSwitches(prev => [...prev, { ...bankSwitch, id: crypto.randomUUID() }]);
-  const removeSwitch = (id: string) => setSwitches(prev => prev.filter(s => s.id !== id));
-  const updateSwitchStatus = (id: string, status: "active" | "completed" | "failed") => setSwitches(prev => prev.map(s => s.id === id ? { ...s, status } : s));
-  const updateBudget = (monthKey: string, amount: number) => setBudgets(prev => ({ ...prev, [monthKey]: amount }));
-
-  const addAccount = (name: string, type: "debit" | "credit") => {
-    const colors = ["bg-blue-600", "bg-emerald-600", "bg-purple-600", "bg-orange-600", "bg-black", "bg-pink-600"];
-    const randomColor = colors[Math.floor(Math.random() * colors.length)];
-    setAccounts(prev => [...prev, { id: crypto.randomUUID(), name, type, color: randomColor }]);
-  };
-
-  const removeAccount = (id: string) => {
-    if (accounts.length <= 1) return alert("You must have at least one account.");
-    setAccounts(prev => prev.filter(a => a.id !== id));
-  };
-
-  const getMonthlyStats = () => {
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    const monthlyTx = transactions.filter((t) => t.date.startsWith(currentMonth));
-    const income = monthlyTx.filter((t) => t.type === "income").reduce((sum, t) => sum + t.amount, 0);
-    const expense = monthlyTx.filter((t) => t.type === "expense").reduce((sum, t) => sum + t.amount, 0);
-    return { income, expense, balance: income - expense };
-  };
-
-  const getMonthlyHistory = () => {
-    const history: Record<string, { month: string; income: number; expense: number }> = {};
-    transactions.forEach((tx) => {
-      const monthKey = tx.date.slice(0, 7); 
-      if (!history[monthKey]) {
-        const dateObj = new Date(tx.date);
-        history[monthKey] = { month: dateObj.toLocaleString('default', { month: 'short', year: '2-digit' }), income: 0, expense: 0 };
-      }
-      if (tx.type === "income") history[monthKey].income += tx.amount;
-      else history[monthKey].expense += tx.amount;
-    });
-    return Object.entries(history).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)).map(([_, val]) => val);
-  };
-
-  const addPortfolioItem = (item: Omit<PortfolioItem, "id">) => setPortfolio(prev => [...prev, { ...item, id: crypto.randomUUID() }]);
-  const removePortfolioItem = (id: string) => setPortfolio(prev => prev.filter(p => p.id !== id));
-
-  const refreshPrices = async (extendedOverride?: boolean) => {
-    if ((portfolio || []).length === 0) return;
-    setIsRefreshing(true); 
-    
-    const isExtended = extendedOverride !== undefined ? extendedOverride : useExtendedHours;
-
-    try {
-      let newPrices: Record<string, number> = { ...livePrices };
-
-      // --- CRYPTO ---
-      const cryptoItems = portfolio.filter(p => p.type === "crypto");
-      if (cryptoItems.length > 0) {
-        const ids = Array.from(new Set(cryptoItems.map(p => p.symbol))).join(",");
-        const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=gbp`);
-        if (res.ok) {
-          const data = await res.json();
-          cryptoItems.forEach(p => { if (data[p.symbol]?.gbp) newPrices[p.symbol] = data[p.symbol].gbp; });
+    const checkUserAndFetch = async () => {
+      try {
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        
+        if (sessionError || !session) {
+          if (isMounted) {
+            window.location.href = "/auth";
+          }
+          return;
         }
+
+        const uid = session.user.id;
+        if (isMounted) setUserId(uid);
+
+        // Run all user data queries simultaneously to maximize network speed
+        const [
+          { data: txs },
+          { data: ports },
+          { data: subs },
+          { data: sws },
+          { data: bdgs },
+          { data: accs },
+          { data: pAccs },
+          { data: pTxs },
+          { data: brkrs } // <-- NEW: Fetch Brokerages
+        ] = await Promise.all([
+          supabase.from("transactions").select("*").eq("user_id", uid).order("date", { ascending: false }),
+          supabase.from("portfolio").select("*").eq("user_id", uid),
+          supabase.from("subscriptions").select("*").eq("user_id", uid),
+          supabase.from("bank_switches").select("*").eq("user_id", uid),
+          supabase.from("budgets").select("*").eq("user_id", uid),
+          supabase.from("bank_accounts").select("*").eq("user_id", uid),
+          supabase.from("prop_accounts").select("*").eq("user_id", uid),
+          supabase.from("prop_transactions").select("*").eq("user_id", uid).order("date", { ascending: false }),
+          supabase.from("brokerages").select("*").eq("user_id", uid) // <-- NEW: Fetch Brokerages
+        ]);
+
+        if (isMounted) {
+          setTransactions(txs || []);
+          setPortfolio(
+            (ports || []).map((p: any) => ({
+              id: p.id,
+              name: p.name,
+              symbol: p.symbol,
+              amount: Number(p.amount),
+              purchasePrice: Number(p.purchase_price), // Maps DB to UI
+              imageUrl: p.image_url,                   // Maps DB to UI
+              type: p.type,
+              date: p.date,
+              platform: p.platform,
+              user_id: p.user_id
+            }))
+          );
+          setSwitches(sws || []);
+          setBudgets(bdgs || []);
+          setAccounts(accs || []);
+          setPropAccounts(pAccs || []);
+          setPropTransactions(pTxs || []);
+          setBrokerages(brkrs || []); // <-- NEW: Set Brokerages State
+          
+          // Map snake_case from DB to camelCase for your subscriptions frontend
+          setSubscriptions(
+            (subs || []).map((s: any) => ({
+              id: s.id,
+              name: s.name,
+              cost: Number(s.cost),
+              billingDay: s.billing_day,
+              user_id: s.user_id
+            }))
+          );
+          
+          setIsLoaded(true);
+        }
+      } catch (err) {
+        console.error("Error populating finance data dashboard tables:", err);
+        if (isMounted) window.location.href = "/auth";
       }
+    };
 
-      // --- STOCKS & ETFs ---
-      const stockItems = portfolio.filter(p => p.type === "stock");
-      if (stockItems.length > 0) {
-         let fxRates: Record<string, number> = { "USD": 0.79, "EUR": 0.85 }; 
-         try {
-            const [usdRes, eurRes] = await Promise.all([ fetch(`/api/stock?symbol=GBP=X`), fetch(`/api/stock?symbol=EURGBP=X`) ]);
-            if (usdRes.ok) { const data = await usdRes.json(); const p = data?.chart?.result?.[0]?.meta?.regularMarketPrice; if (p) fxRates["USD"] = p; }
-            if (eurRes.ok) { const data = await eurRes.json(); const p = data?.chart?.result?.[0]?.meta?.regularMarketPrice; if (p) fxRates["EUR"] = p; }
-         } catch (e) { console.error("Using fallback exchange rates"); }
+    checkUserAndFetch();
 
-         const uniqueStocks = Array.from(new Set(stockItems.map(p => p.symbol)));
-         
-         await Promise.all(uniqueStocks.map(async (ticker) => {
-            try {
-                // THE DICTIONARY FIX: Instantly map the UI ticker to the correct Yahoo API ticker
-                const fetchTicker = FETCH_ALIASES[ticker] || ticker; 
+    return () => {
+      isMounted = false;
+    };
+  }, [supabase]);
 
-                const res = await fetch(`/api/stock?symbol=${fetchTicker.toUpperCase()}`);
-                
-                if (res.ok) {
-                    const data = await res.json();
-                    
-                    const result = data?.chart?.result?.[0];
-                    const meta = result?.meta;
-                    const closePrices = result?.indicators?.quote?.[0]?.close;
-                    
-                    if (meta && meta.regularMarketPrice) {
-                        let price = meta.regularMarketPrice;
-                        
-                        if (isExtended) {
-                            if (meta.postMarketPrice) {
-                                price = meta.postMarketPrice;
-                            } else if (closePrices && closePrices.length > 0) {
-                                const validPrices = closePrices.filter((p: number | null) => p !== null);
-                                if (validPrices.length > 0) {
-                                    price = validPrices[validPrices.length - 1];
-                                }
-                            }
-                        }
-
-                        const currency = meta.currency; 
-                        
-                        if (currency === "USD") price = price * fxRates["USD"]; 
-                        else if (currency === "EUR") price = price * fxRates["EUR"];
-                        else if (currency === "GBp") price = price / 100; 
-                        
-                        newPrices[ticker] = price; 
-                    }
-                }
-            } catch (err) {
-                console.error(`Failed to fetch ${ticker}`, err);
-            }
-         }));
+  // 2. Market Pricing Refresh Logic
+  const refreshPrices = useCallback(async (extendedHours = useExtendedHours) => {
+    if (portfolio.length === 0) return;
+    setIsRefreshing(true);
+    try {
+      const symbols = Array.from(new Set(portfolio.map((item) => item.symbol)));
+      const res = await fetch("/api/prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbols, useExtendedHours: extendedHours }),
+      });
+      if (res.ok) {
+        const priceMap = await res.json();
+        setLivePrices(priceMap);
       }
-
-      setLivePrices(newPrices);
     } catch (err) {
-      console.error("Failed to fetch prices:", err);
+      console.error("Market API execution drop:", err);
     } finally {
-      setIsRefreshing(false); 
+      setIsRefreshing(false);
+    }
+  }, [portfolio, useExtendedHours]);
+
+  // 3. Cloud Synchronization Database Actions
+  
+  const addPortfolioItem = async (item: any) => {
+    if (!userId) return;
+    
+    // MAP FRONTEND CAMELCASE TO BACKEND SNAKE_CASE
+    const payload = {
+      name: item.name,
+      symbol: item.symbol,
+      amount: item.amount,
+      purchase_price: item.purchasePrice, // Maps UI to DB
+      image_url: item.imageUrl,           // Maps UI to DB
+      type: item.type,
+      date: item.date,
+      platform: item.platform,
+      user_id: userId
+    };
+
+    const { data, error } = await supabase
+      .from("portfolio")
+      .insert([payload])
+      .select();
+      
+    if (error) {
+      console.error("Supabase Portfolio Insert Error:", error);
+    }
+
+    if (!error && data) {
+      // MAP IT BACK FOR THE STATE UPDATE
+      const uiFriendlyData = {
+        id: data[0].id,
+        name: data[0].name,
+        symbol: data[0].symbol,
+        amount: Number(data[0].amount),
+        purchasePrice: Number(data[0].purchase_price), 
+        imageUrl: data[0].image_url,                   
+        type: data[0].type,
+        date: data[0].date,
+        platform: data[0].platform,
+        user_id: data[0].user_id
+      };
+      setPortfolio((prev) => [...prev, uiFriendlyData]);
     }
   };
 
-  return { 
-    portfolio, livePrices, addPortfolioItem, removePortfolioItem, refreshPrices, isRefreshing,
-    useExtendedHours, setUseExtendedHours,
-    transactions, switches, subscriptions, budgets, accounts, 
-    addTransaction, removeTransaction, editTransaction,
-    addSwitch, removeSwitch, updateSwitchStatus, 
-    addSubscription, removeSubscription, updateBudget,
-    addAccount, removeAccount, 
-    getMonthlyStats, getMonthlyHistory, isLoaded 
+  const removePortfolioItem = async (id: string) => {
+    const { error } = await supabase.from("portfolio").delete().eq("id", id);
+    if (!error) setPortfolio((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  const addSubscription = async (sub: any) => {
+    if (!userId) return;
+    
+    const payload = { 
+      name: sub.name,
+      cost: sub.cost,
+      billing_day: sub.billingDay,
+      user_id: userId 
+    };
+
+    const { data, error } = await supabase
+      .from("subscriptions")
+      .insert([payload])
+      .select();
+
+    if (!error && data) {
+      const uiFriendlyData = {
+        id: data[0].id,
+        name: data[0].name,
+        cost: Number(data[0].cost),
+        billingDay: data[0].billing_day,
+        user_id: data[0].user_id
+      };
+      setSubscriptions((prev) => [...prev, uiFriendlyData]);
+    }
+  };
+
+  const removeSubscription = async (id: string) => {
+    const { error } = await supabase.from("subscriptions").delete().eq("id", id);
+    if (!error) setSubscriptions((prev) => prev.filter((s) => s.id !== id));
+  };
+
+  const addTransaction = async (tx: any) => {
+    if (!userId) return;
+    const { data, error } = await supabase.from("transactions").insert([{ ...tx, user_id: userId }]).select();
+    if (!error && data) setTransactions((prev) => [data[0], ...prev]);
+  };
+
+  const removeTransaction = async (id: string) => {
+    const { error } = await supabase.from("transactions").delete().eq("id", id);
+    if (!error) setTransactions((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const updateBudget = async (monthKey: string, amount: number) => {
+    if (!userId) return;
+    const { data, error } = await supabase
+      .from("budgets")
+      .upsert({ user_id: userId, month_key: monthKey, amount }, { onConflict: "user_id,month_key" })
+      .select();
+    if (!error && data) {
+      setBudgets((prev) => {
+        const filtered = prev.filter((b) => b.month_key !== monthKey);
+        return [...filtered, data[0]];
+      });
+    }
+  };
+
+  const addBankAccount = async (acc: any) => {
+    if (!userId) return;
+    const { data, error } = await supabase.from("bank_accounts").insert([{ ...acc, user_id: userId }]).select();
+    
+    if (error) {
+        console.error("Bank Account Error:", error);
+        alert(`Error: ${error.message}`);
+        return;
+    }
+    if (data) setAccounts((prev) => [...prev, data[0]]);
+  };
+
+  const updateBankAccount = async (id: string, updates: any) => {
+    const { data, error } = await supabase.from("bank_accounts").update(updates).eq("id", id).select();
+    
+    // The fix: Add `data.length > 0` so we don't accidentally save 'undefined'
+    if (!error && data && data.length > 0) {
+        setAccounts((prev) => prev.map((a) => (a.id === id ? data[0] : a)));
+    } else if (error) {
+        console.error("Error updating bank account:", error);
+    }
+  };
+
+  const removeBankAccount = async (id: string) => {
+    const { error } = await supabase.from("bank_accounts").delete().eq("id", id);
+    if (!error) {
+        setAccounts((prev) => prev.filter((a) => a.id !== id));
+    } else {
+        console.error("DELETE ERROR:", error);
+    }
+  };
+
+  const addBankSwitch = async (sw: any) => {
+    if (!userId) return;
+    const { data, error } = await supabase.from("bank_switches").insert([{ ...sw, user_id: userId }]).select();
+    if (!error && data) setSwitches((prev) => [...prev, data[0]]);
+  };
+
+  const updateBankSwitchStatus = async (id: string, status: string) => {
+    const { data, error } = await supabase.from("bank_switches").update({ status }).eq("id", id).select();
+    if (!error && data) setSwitches((prev) => prev.map((s) => (s.id === id ? data[0] : s)));
+  };
+
+  const removeBankSwitch = async (id: string) => {
+    const { error } = await supabase.from("bank_switches").delete().eq("id", id);
+    if (!error) setSwitches((prev) => prev.filter((s) => s.id !== id));
+  };
+
+  // 4. Prop Firm Data Core Actions
+  const addPropAccount = async (acc: any) => {
+    if (!userId) return;
+    const { data, error } = await supabase
+      .from("prop_accounts")
+      .insert([{ ...acc, user_id: userId }])
+      .select();
+      
+    if (error) {
+      console.error("SUPABASE PROP ACCOUNT ERROR:", error);
+      alert(`Database Error: ${error.message}`);
+      return;
+    }
+    if (data) setPropAccounts((prev) => [...prev, data[0]]);
+  };
+
+  const updatePropAccountStatus = async (id: string, status: string) => {
+    const { data, error } = await supabase.from("prop_accounts").update({ status }).eq("id", id).select();
+    if (!error && data) setPropAccounts((prev) => prev.map((a) => (a.id === id ? data[0] : a)));
+  };
+
+  const updatePropAccountCash = async (id: string, newBalance: number) => {
+    const { error } = await supabase.from("prop_accounts").update({ cash_balance: newBalance }).eq("id", id);
+    if (!error) {
+      setPropAccounts(prev => prev.map(a => a.id === id ? { ...a, cash_balance: newBalance } : a));
+    }
+  };
+
+  const removePropAccount = async (id: string) => {
+    const { error } = await supabase.from("prop_accounts").delete().eq("id", id);
+    if (!error) {
+      setPropAccounts((prev) => prev.filter((a) => a.id !== id));
+      setPropTransactions((prev) => prev.filter((t) => t.account_id !== id));
+    }
+  };
+
+  const addPropTransaction = async (tx: any) => {
+    if (!userId) return;
+    const { data, error } = await supabase.from("prop_transactions").insert([{ ...tx, user_id: userId }]).select();
+    if (!error && data) setPropTransactions((prev) => [data[0], ...prev]);
+  };
+
+  const removePropTransaction = async (id: string) => {
+    const { error } = await supabase.from("prop_transactions").delete().eq("id", id);
+    if (!error) setPropTransactions((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  // 5. Brokerage Cash Actions (NEW)
+  const addBrokerage = async (name: string) => {
+    if (!userId) return;
+    const { data, error } = await supabase.from("brokerages").insert([{ name, cash_balance: 0, user_id: userId }]).select();
+    if (data) setBrokerages(prev => [...prev, data[0]]);
+  };
+
+  const updateBrokerageCash = async (id: string, newBalance: number) => {
+    const { error } = await supabase.from("brokerages").update({ cash_balance: newBalance }).eq("id", id);
+    if (!error) {
+      setBrokerages(prev => prev.map(b => b.id === id ? { ...b, cash_balance: newBalance } : b));
+    }
+  };
+
+  const removeBrokerage = async (id: string) => {
+    // 1. Find the broker name first so we know what assets to delete
+    const brokerToDelete = brokerages.find(b => b.id === id);
+    
+    if (brokerToDelete) {
+      // 2. Wipe out all stocks/assets attached to this broker
+      await supabase.from("portfolio").delete().eq("platform", brokerToDelete.name);
+      setPortfolio(prev => prev.filter(p => p.platform !== brokerToDelete.name));
+    }
+
+    // 3. Delete the broker itself
+    await supabase.from("brokerages").delete().eq("id", id);
+    setBrokerages(prev => prev.filter(b => b.id !== id));
+  };
+
+  return {
+    isLoaded,
+    transactions,
+    portfolio,
+    subscriptions,
+    switches,
+    budgets,
+    accounts,
+    propAccounts,
+    propTransactions,
+    brokerages,
+    livePrices,
+    isRefreshing,
+    useExtendedHours,
+    setUseExtendedHours,
+    refreshPrices,
+    addTransaction,
+    removeTransaction,
+    addPortfolioItem,
+    removePortfolioItem,
+    addSubscription,
+    removeSubscription,
+    updateBudget,
+    addBankAccount,
+    updateBankAccount, // <-- ADDED HERE
+    removeBankAccount,
+    addBankSwitch,
+    updateBankSwitchStatus,
+    removeBankSwitch,
+    addPropAccount,
+    updatePropAccountStatus,
+    removePropAccount,
+    addPropTransaction,
+    removePropTransaction,
+    addBrokerage,
+    updateBrokerageCash,
+    removeBrokerage,
   };
 }
